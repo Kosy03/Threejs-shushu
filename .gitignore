@@ -1,0 +1,12 @@
+# node_modules는 절대 올리지 않음
+node_modules/
+
+# 빌드 산출물(나중에 webpack이나 vite 쓰면 생김)
+dist/
+
+# 환경 변수 파일 (혹시 쓰면)
+.env
+
+# 운영체제에서 자동생성되는 잡파일
+.DS_Store
+Thumbs.db
