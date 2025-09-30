@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>슈</title>
+    <style>
+      html, body { margin:0; height:100%; overflow:hidden; background:#0e0f12; }
+      canvas { display:block; width:100vw; height:100vh; }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+    <script type="module">
+      import * as THREE from "three";
+      import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+
+      // 기본 세팅
+      const canvas = document.getElementById("c");
+      const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.shadowMap.enabled = true;
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x101216);
+
+      const camera = new THREE.PerspectiveCamera(
+        60,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        100
+      );
+      camera.position.set(2.2, 1.2, 2.2);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.target.set(0.2, 0.2, 0);
+      controls.enableDamping = true;
+
+      const WHITE = "#f5f5f5";
+      const DARK  = "#5b5f66"; // 쿨톤 짙은 회색
+
+    // 얼굴
+    function makeHeadMaskTexture({
+      baseW = 0.31,  // 아랫변(코쪽) 폭 비율
+      baseY = 0.26,  // 아랫변 y 위치(0=아래, 1=위)
+      apexY = 0.70   // 꼭짓점 y 위치(정수리 방향, 값↑ = 더 위로 뾰족)
+    } = {}) {
+      const c = document.createElement("canvas"); c.width = 1024; c.height = 512;
+      const g = c.getContext("2d");
+      const W = c.width, H = c.height, cx = W/2;
+
+      // 배경 회색
+      g.fillStyle = "#5b5f66";
+      g.fillRect(0, 0, W, H);
+
+      // 흰 삼각형 (위로 뾰족)
+      const half = (baseW * W) / 2;
+      const yB = baseY * H;   // 아래쪽 아랫변
+      const yA = apexY * H;   // 위쪽 꼭짓점
+
+      g.fillStyle = "#f5f5f5";
+      g.beginPath();
+      g.moveTo(cx - half, yB);   // 왼 아랫변
+      g.lineTo(cx + half, yB);   // 오른 아랫변
+      g.lineTo(cx,       yA);    // 위쪽 꼭짓점(정수리 방향)
+      g.closePath();
+      g.fill();
+
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.generateMipmaps = false;
+      tex.minFilter = THREE.NearestFilter;
+      tex.magFilter = THREE.NearestFilter;
+      return tex;
+    }
+
+      // 조명
+      const hemi = new THREE.HemisphereLight(0xffffff, 0x404040, 0.6);
+      scene.add(hemi);
+
+      const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
+      dirLight.position.set(3, 5, 3);
+      dirLight.castShadow = true;
+      dirLight.shadow.mapSize.set(1024, 1024);         
+      scene.add(dirLight);
+
+      const ground = new THREE.Mesh(
+        new THREE.PlaneGeometry(8, 8),
+        new THREE.MeshStandardMaterial({ color: 0x15181d, roughness: 1 })
+      );
+      ground.rotation.x = -Math.PI / 2;
+      ground.position.y = -0.5;
+      ground.receiveShadow = true;
+      scene.add(ground);
+
+
+      // 공통 옵션
+      const baseMatOpts = { roughness: 1.0, metalness: 0.0 };
+
+      const fur = new THREE.MeshStandardMaterial({
+        color: 0xf6cfa8,
+        roughness: 0.9,
+        metalness: 0.0,
+      });
+
+
+      // 몸통: 텍스처 → 재질 → 메쉬
+      const bodyMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff, 
+        roughness: 1.0,
+        metalness: 0.0
+      });
+
+      const body = new THREE.Mesh(new THREE.SphereGeometry(0.6, 24, 16), bodyMat);
+      body.scale.set(1.4, 1.0, 0.8);
+      body.castShadow = true;
+      scene.add(body);
+
+      // 머리: 텍스처 → 재질 → 메쉬
+      const headTex = makeHeadMaskTexture();
+      headTex.colorSpace = THREE.SRGBColorSpace;
+
+      const headMat = new THREE.MeshStandardMaterial({
+        color: 0xffffff,
+        map: headTex,
+        ...baseMatOpts,
+      });
+      const head = new THREE.Mesh(new THREE.SphereGeometry(0.35, 24, 16), headMat);
+      head.position.set(0.5, 0.25, 0);
+      head.castShadow = true;
+      scene.add(head);
+
+      headMat.map.center.set(0.5, 0.5);
+      headMat.map.rotation = Math.PI;
+      headMat.map.needsUpdate = true;
+
+// 머리↔몸 경계에 비스듬히 맞춘 링
+const COLLAR_R = 0.4;   // 목둘레(큰 반지름) — 타이트하게: 0.48~0.52
+const COLLAR_T = 0.04;  // 두께(작은 반지름) — 얇게: 0.03~0.045
+
+// 링 생성 + 축 정렬(Z→X: 몸 길이 방향)
+const collarGeo = new THREE.TorusGeometry(COLLAR_R, COLLAR_T, 20, 96);
+collarGeo.rotateY(Math.PI / 2); // ★ 토러스 축을 +X로
+
+const collarMat = new THREE.MeshStandardMaterial({
+  color: 0xff3366,
+  roughness: 1.0,
+  metalness: 0.0,
+});
+
+const collar = new THREE.Mesh(collarGeo, collarMat);
+collar.castShadow = true;
+collar.receiveShadow = true;
+scene.add(collar);
+
+// 2) 몸이 z축 0.8로 납작 → 카라도 z만 맞춤
+collar.scale.set(1, 1, 0.8);
+
+// 3) 방향: +X → (몸→머리)로 맞추고, 추가 기울기까지 한 번에 적용
+const from = new THREE.Vector3(1, 0, 0); // rotateY를 썼으니 기준은 +X
+const dir  = head.position.clone().sub(body.position).normalize();
+
+const qBase = new THREE.Quaternion().setFromUnitVectors(from, dir);
+const TILT_DEG = 0; // 더 세우기(+)/눕히기(-) — 반대로 느껴지면 부호만 바꿔봐
+const qTilt = new THREE.Quaternion().setFromAxisAngle(dir, THREE.MathUtils.degToRad(TILT_DEG));
+collar.quaternion.copy(qBase).multiply(qTilt);  // ★ 한 방에 설정 (덮어쓰기)
+
+// dir: 몸→머리 단위벡터 (이미 위에서 만든 그거 그대로 사용)
+const BACKOFF = 0.02;  // 머리 표면에서 살짝 뒤로(몸 쪽으로) 물러나기
+collar.position.copy(head.position).add(dir.clone().multiplyScalar(-BACKOFF));
+
+
+      // 귀 (그룹 피벗으로 좌우 대칭 정렬)
+      const EAR_H = 0.27;
+      const earGeo = new THREE.ConeGeometry(0.13, EAR_H, 20);
+      // 회전 피벗을 '밑변'으로: 기본 중심을 위로 올려 밑변이 y=0에 오도록
+      earGeo.translate(0, EAR_H/2, 0);
+
+      const earMat = new THREE.MeshStandardMaterial({
+        color: DARK,     // 몸통 줄무늬랑 같은 짙은 회색
+        roughness: 1.0,
+        metalness: 0.0,
+      });
+
+
+      // 각 귀를 그룹으로 만들어 배치(그룹에 회전값 줌)
+      const earLGrp = new THREE.Group();
+      const earRGrp = new THREE.Group();
+      scene.add(earLGrp, earRGrp);
+
+      // 그룹 위치(머리 위 좌우)
+      earLGrp.position.set(0.62, 0.41,  0.128);
+      earRGrp.position.set(0.62, 0.41, -0.128);
+
+      // 실제 귀 메쉬는 그룹의 (0,0,0)에
+      const earL = new THREE.Mesh(earGeo, earMat);
+      const earR = new THREE.Mesh(earGeo, earMat);
+      earL.castShadow = earR.castShadow = true;
+      earLGrp.add(earL);
+      earRGrp.add(earR);
+
+      // 좌우 대칭 각도: roll(z)만 반대로, pitch(x)는 뒤로 살짝 젖혀서 "앞으로 튐" 방지
+      const EAR_ROLL  = 0.1;   // 좌우로 살짝 기울기(롤)
+      const EAR_PITCH = -0.12;  // 뒤로 젖힘(앞으로 튀는 느낌 제거)
+      const EAR_YAW   =  0.15;  // 바깥쪽으로 약간 벌리기(정면에서 자연스럽게)
+
+      earLGrp.rotation.set(EAR_PITCH, +EAR_YAW, -EAR_ROLL); // L: pitch, yaw(+), roll(-)
+      earRGrp.rotation.set(EAR_PITCH, -EAR_YAW, +EAR_ROLL); // R: pitch, yaw(-), roll(+)
+
+      // 꼬리
+      const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 0.8, 12), fur);
+      tail.position.set(-0.75, 0.1, 0);
+      tail.rotation.z = Math.PI * 0.55;
+      scene.add(tail);
+
+      tail.material.map = null;
+      tail.material.color.set(DARK);
+      tail.material.roughness = 1.0; tail.material.metalness = 0.0;
+
+      // 다리
+      const legGeo = new THREE.CylinderGeometry(0.07, 0.09, 0.42, 12);
+      const legOffsets = [
+        [0.28, -0.29, 0.2],
+        [0.28, -0.29, -0.2],
+        [-0.2, -0.29, 0.2],
+        [-0.2, -0.29, -0.2],
+      ];
+      legOffsets.forEach(([x, y, z]) => {
+        const leg = new THREE.Mesh(legGeo, fur);
+        leg.position.set(x, y, z);
+        scene.add(leg);
+      });
+
+      // 눈
+      const HEAD_CENTER = new THREE.Vector3(0.52, 0.27, 0);
+      const HEAD_R = 0.32;
+
+      const EMBED = 0.045;        // 눈을 머리 안으로 넣는 양
+      const EYE_OFFSET_Z = 0.105; // 좌우 간격
+      const EYE_Y = HEAD_CENTER.y;
+      const EYE_R = 0.065;        // 안구 반지름
+
+      function makeIrisTexture({ iris="#b88215", pupil="#111" } = {}) {
+        const c = document.createElement("canvas"); c.width = c.height = 256;
+        const g = c.getContext("2d");
+        const rad = g.createRadialGradient(128,128,10,128,128,120);
+        rad.addColorStop(0.00, "#c7921e"); rad.addColorStop(0.40, iris); rad.addColorStop(1.00, "#5a3a10");
+        g.fillStyle = rad; g.beginPath(); g.arc(128,128,120,0,Math.PI*2); g.fill();
+        g.fillStyle = pupil; g.beginPath(); g.ellipse(128,128,35,85,0,0,Math.PI*2); g.fill();
+        return new THREE.CanvasTexture(c);
+      }
+      const irisTex = makeIrisTexture(); 
+      irisTex.anisotropy = 4;
+      irisTex.center.set(0.5, 0.5);   // 회전 기준을 텍스처 중앙으로
+      irisTex.rotation = 0;           // 기본 각도 0도
+      irisTex.needsUpdate = true;     // 변경 적용
+
+
+      const eyeMat = new THREE.MeshStandardMaterial({ map: irisTex, roughness: 0.15, metalness: 0.0 });
+
+      function makeEye(side = +1) {
+        const eyeGroup = new THREE.Group();
+
+        const eyeball = new THREE.Mesh(new THREE.SphereGeometry(EYE_R, 32, 24), eyeMat);
+        eyeball.rotation.set(0,0,0);
+        eyeball.castShadow = true;
+        eyeGroup.add(eyeball);
+
+        const eyeX = HEAD_CENTER.x + (HEAD_R - EMBED);
+        const eyeZ = side * EYE_OFFSET_Z;
+        eyeGroup.position.set(eyeX, EYE_Y, eyeZ);
+
+        const EYE_INWARD = 0.05; 
+        eyeGroup.rotation.y = (side === +1 ? -EYE_INWARD : +EYE_INWARD);
+
+        return eyeGroup;
+      }
+      const eyeL = makeEye(+1), eyeR = makeEye(-1); scene.add(eyeL, eyeR);
+
+      // 코
+      const NOSE_W = 0.05, NOSE_H = 0.03, NOSE_T = 0.02, OUT_EPS = 0.006;
+      const NOSE_R = Math.min(NOSE_W * 0.22, NOSE_H * 0.22); // 라운드 반지름
+
+      const Ax = -NOSE_W/2, Ay = +NOSE_H/2;  // 좌상
+      const Bx = +NOSE_W/2, By = +NOSE_H/2;  // 우상
+      const Cx = 0,          Cy = -NOSE_H/2; // 아래 뾰족
+
+      const lenAC = Math.hypot(Cx-Ax, Cy-Ay);
+      const lenBC = Math.hypot(Cx-Bx, Cy-By);
+      const lenCA = Math.hypot(Ax-Cx, Ay-Cy);
+
+      // 코너 접점들 (★ 모두 NOSE_R 사용!)
+      const A_to_B = { x: Ax + NOSE_R, y: Ay };
+      const A_to_C = { x: Ax + (Cx-Ax) * (NOSE_R/lenAC), y: Ay + (Cy-Ay) * (NOSE_R/lenAC) };
+
+      const B_to_A = { x: Bx - NOSE_R, y: By };
+      const B_to_C = { x: Bx + (Cx-Bx) * (NOSE_R/lenBC), y: By + (Cy-By) * (NOSE_R/lenBC) };
+
+      const C_to_A = { x: Cx + (Ax-Cx) * (NOSE_R/lenCA), y: Cy + (Ay-Cy) * (NOSE_R/lenCA) };
+      const C_to_B = { x: Cx + (Bx-Cx) * (NOSE_R/lenBC), y: Cy + (By-Cy) * (NOSE_R/lenBC) };
+
+      const noseShape = new THREE.Shape();
+      noseShape.moveTo(A_to_B.x, A_to_B.y);
+      noseShape.quadraticCurveTo(Ax, Ay, A_to_C.x, A_to_C.y);
+      noseShape.lineTo(C_to_A.x, C_to_A.y);
+      noseShape.quadraticCurveTo(Cx, Cy, C_to_B.x, C_to_B.y);
+      noseShape.lineTo(B_to_C.x, B_to_C.y);
+      noseShape.quadraticCurveTo(Bx, By, B_to_A.x, B_to_A.y);
+      noseShape.closePath();
+
+      const noseGeo = new THREE.ExtrudeGeometry(noseShape, {
+        depth: NOSE_T, bevelEnabled: true, bevelThickness: 0.004, bevelSize: 0.004, bevelSegments: 3, curveSegments: 24
+      });
+      const noseMat = new THREE.MeshStandardMaterial({ color: 0xB06A6A, roughness: 0.7, metalness: 0.0 });
+
+      const nose = new THREE.Mesh(noseGeo, noseMat); nose.castShadow = true;
+      nose.rotation.y = -Math.PI / 2; nose.rotation.x = Math.PI * 0.02;
+
+      const noseX = HEAD_CENTER.x + (HEAD_R + OUT_EPS);
+      const noseY = HEAD_CENTER.y - 0.05;
+      nose.position.set(noseX, noseY, 0);
+      scene.add(nose);
+
+
+      // 루프
+      const clock = new THREE.Clock();
+      function animate() {
+        const t = clock.getElapsedTime();
+        body.position.y = Math.sin(t * 1.5) * 0.02; // 숨쉬기 느낌
+        controls.update();
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+      }
+      animate();
+
+      // 리사이즈
+      window.addEventListener("resize", () => {
+        const w = window.innerWidth, h = window.innerHeight;
+        renderer.setSize(w, h);
+        camera.aspect = w / h;
+        camera.updateProjectionMatrix();
+      });
+    </script>
+  </body>
+</html>
